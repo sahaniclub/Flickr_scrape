@@ -1,0 +1,88 @@
+import os
+import time
+import random
+import requests
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+
+# -------- CONFIG ----------
+CSV_FILE = "Till_Exoticpets - Sheet1.csv"  # path to your CSV
+IMAGES_TO_DOWNLOAD = 10     # number of images to download per item
+IMAGES_TO_SKIP = 1         # number of starting images to skip
+SCROLL_ROUNDS = 15          # scroll more to load enough images
+BASE_FOLDER = "downloads"   # root folder to save images
+FLICKR_HOME = "https://www.flickr.com/"  # initial page for manual login
+# --------------------------
+
+# Setup Chrome
+options = webdriver.ChromeOptions()
+options.add_argument("--start-maximized")
+driver = webdriver.Chrome(options=options)
+
+def get_large_url(url: str) -> str:
+    """Upgrade Flickr thumbnail to large resolution."""
+    for suffix in ["_m.", "_q.", "_n.", "_z."]:
+        if suffix in url:
+            return url.replace(suffix, "_b.")
+    return url
+
+# Step 1: Open Flickr home for manual login
+driver.get(FLICKR_HOME)
+input("🔐 Please log in to Flickr manually and then press Enter here to continue...")
+
+# Step 2: Read CSV
+df = pd.read_csv(CSV_FILE)
+
+# Step 3: Iterate over categories
+for category in df.columns:
+    items = df[category].dropna().tolist()  # list of items under this category
+    category_folder = os.path.join(BASE_FOLDER, category.replace(" ", "_"))
+    os.makedirs(category_folder, exist_ok=True)
+
+    for item in items:
+        print(f"\n🔎 Searching {item} under {category}")
+        search_url = f"https://www.flickr.com/search/?text={item.replace(' ', '%20')}"
+        driver.get(search_url)
+        time.sleep(3)
+
+        # Scroll to load images
+        img_urls = []
+        for _ in range(SCROLL_ROUNDS):
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
+            time.sleep(2)
+            images = driver.find_elements(By.CSS_SELECTOR, "img")
+            for img in images:
+                url = img.get_attribute("src")
+                if url and "staticflickr" in url and url not in img_urls:
+                    img_urls.append(url)
+            if len(img_urls) >= (IMAGES_TO_SKIP + IMAGES_TO_DOWNLOAD + 10):
+                break
+
+        # Skip first N images
+        img_urls = img_urls[IMAGES_TO_SKIP:]
+        random.shuffle(img_urls)
+        img_urls = img_urls[:IMAGES_TO_DOWNLOAD]
+
+        # Create folder for item
+        item_folder = os.path.join(category_folder, item.replace(" ", "_"))
+        os.makedirs(item_folder, exist_ok=True)
+
+        # Download images
+        for i, url in enumerate(img_urls, start=1):
+            try:
+                url = get_large_url(url)
+                r = requests.get(url, stream=True, timeout=10)
+                if r.status_code == 200:
+                    file_path = os.path.join(item_folder, f"{item.replace(' ', '_')}_{i}.jpg")
+                    with open(file_path, "wb") as f:
+                        for chunk in r.iter_content(1024):
+                            f.write(chunk)
+                    print(f"✅ Saved {file_path}")
+                else:
+                    print(f"⚠️ Failed to fetch {url}")
+            except Exception as e:
+                print(f"❌ Error saving {item} image {i}: {e}")
+
+driver.quit()
